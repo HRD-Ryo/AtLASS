@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import subprocess
+from subprocess import getoutput
+import os
+import sys
+import argparse
+import datetime
+import version
+
+
+def GetOptions(outdir):
+    description = 'Description: \
+                \n  AtLASS is fully automated learning and predicting tool for Splice Sites using attention bidirectional LSTM. \
+                \n  Please see GitHub (https://github.com/HRD-Ryo/AtLASS.git) for detail information. \
+                \nRequired resources: \
+                \n  1. 48 GB of RAM \
+                \n  2. 16 GB of GPU memory \n \
+                \nThree modes and commands examples: \
+                \n  mode1: Standard (recommended) \
+                \n    $ Atlass -g <genome> -1 <rna_1.fastq> -2 <rna_2.fastq> -c <cpu> -gpu \
+                \n    $ Atlass -g <genome> -b <bam> -gpu \
+                \n  mode2: Use pre-trained models \
+                \n    $ Atlass -g <genome> -m1 <model1> -m2 <model2> -gpu \
+                \n  mode3: Use models trained on other species \
+                \n    $ Atlass -g <genome> -o-g <other_genome> -o-gbf <other_GenBank> -gpu \
+                \n    $ Atlass -g <genome> -o-g <other_genome> -o-1 <other_rna_1.fastq> -o-2 <other_rna_2.fastq> -c <cpu> -gpu \
+                \n    $ Atlass -g <genome> -o-g <other_genome> -o-b <other_bam> -gpu '
+
+    parser = argparse.ArgumentParser(description=description, add_help=True, formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('-o', '--outdir', type=str, action='store', default=outdir, help='Output directory \nDefault is ./output_${year+month+day}')
+    parser.add_argument('-g', '--genome', type=str, action='store', default=None, help='Genome fasta file to be predicted')
+    parser.add_argument('-b', '--bam', '--BAM', '--sam', '--SAM', type=str, action='store', default=None, help='BAM or SAM file for learning \nHISAT2 is expected mapper')
+    parser.add_argument('-1', '--fastq_1', type=str, action='store', default=None, help='Fastq or Fastq.gz file 1 for learning')
+    parser.add_argument('-2', '--fastq_2', type=str, action='store', default=None, help='Fastq or Fastq.gz file 2 for learning')
+    parser.add_argument('-c', '--cpu', '--CPU', type=int, action='store', default=1, help='Number of cpu in mapping phase \nDefault is 1')
+    parser.add_argument('-gpu', '--gpu', '--GPU', action='store_true', help='Run with GPU device in learning and predicting phase \nDefault is False, recommended is True \nCPU mode will use ALL CPUs')
+    parser.add_argument('-f', '--fast', '--FAST', action='store_true', help='Enable fast model \nFast mode uses smaller models and may result in less accuracy')
+    parser.add_argument('-m1', '--model1', type=str, action='store', default=None, help='Pre-trained model_1 file')
+    parser.add_argument('-m2', '--model2', type=str, action='store', default=None, help='Pre-trained model_2 file')
+    parser.add_argument('-o-g', '--other_genome', type=str, action='store', default=None, help='Genome fasta file of other species for learning')
+    parser.add_argument('-o-gbf', '--other_GenBank', type=str, action='store', default=None, help='GenBank file of other species for learning')
+    parser.add_argument('-o-b', '--other_bam', type=str, action='store', default=None, help='BAM or SAM file of other species for learning')
+    parser.add_argument('-o-1', '--other_fastq_1', type=str, action='store', default=None, help='Fastq or Fastq.gz file 1 of other species for learning')
+    parser.add_argument('-o-2', '--other_fastq_2', type=str, action='store', default=None, help='Fastq or Fastq.gz file 2 of other species for learning')
+    parser.add_argument('-v', '--version', action='store_true', help='Show version and exit')
+    return parser.parse_args()
+
+
+def ArgumentsCheck(args):
+    if args.genome!=None \
+    and ((args.bam!=None) ^ (args.fastq_1!=None and args.fastq_2!=None)) \
+    and args.model1==None and args.model2==None \
+    and args.other_genome==None and args.other_GenBank==None and args.other_bam==None and args.other_fastq_1==None and args.other_fastq_2==None:
+        mode = 1    ####    same species
+    elif args.genome!=None \
+    and args.bam==None and args.fastq_1==None and args.fastq_2==None \
+    and args.model1!=None and args.model2!=None \
+    and args.other_genome==None and args.other_GenBank==None and args.other_bam==None and args.other_fastq_1==None and args.other_fastq_2==None:
+        mode = 2    ####    pre-train model
+    elif args.genome!=None \
+    and args.bam==None and args.fastq_1==None and args.fastq_2==None \
+    and args.model1==None and args.model2==None \
+    and args.other_genome!=None and (((args.other_GenBank!=None) ^ (args.other_bam!=None)) ^ (args.other_fastq_1!=None and args.other_fastq_2!=None)):
+        mode = 3    ####    other species
+    else:
+        sys.exit('  Arguments Error !  Please check arguments !')
+    return mode
+
+
+def DataMake_map(script_path, genome, fastq_1, fastq_2, bam, bam_filtered, intron_tsv, exon_tsv, cpu):
+    if bam==None and fastq_1!=None and fastq_2!=None:
+        cmd1 = 'hisat2-build {} {} 1>/dev/null 2>&1'.format(genome, genome)
+        os.system(cmd1)
+        cmd2 = 'hisat2 --max-intronlen 10000 -p {} -x {} -1 {} -2 {} 2>/dev/null | python3 {}ExtractReads.py | samtools sort -O bam -o {} 2>/dev/null'.format(cpu, genome, fastq_1, fastq_2, script_path, bam_filtered)
+    elif bam!=None and fastq_1==None and fastq_2==None:
+        cmd2 = 'samtools view -h {} | python3 {}ExtractReads.py | samtools sort -O bam -o {} 2>/dev/null'.format(bam, script_path, bam_filtered)
+    cmd3 = 'samtools index {}'.format(bam_filtered)
+    cmd4 = 'samtools mpileup -f {} {} 2>/dev/null | python3 {}ExonIntronIdentify.py {} {}'.format(genome, bam_filtered, script_path, exon_tsv, intron_tsv)    ####    1h
+    os.system(cmd2)
+    os.system(cmd3)
+    os.system(cmd4)
+    print('  [{}]  IntronExtract Finish.'.format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')), file=sys.stderr)
+
+
+def DataMake_gbf(script_path, genbank, intron_tsv, exon_tsv):
+    cmd1 = 'python3 {}GbfExon.py {} | sort | uniq > {}'.format(script_path, genbank, exon_tsv)
+    cmd2 = 'python3 {}GbfIntron.py {} | cut -f 1,4,5 | sort | uniq > {}'.format(script_path, genbank, intron_tsv)
+    os.system(cmd1)
+    os.system(cmd2)
+    print('  [{}]  IntronExtract Finish.'.format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')), file=sys.stderr)
+
+
+def SubSampling(posi, nega, posi_part, nega_part):
+    cmd1 = 'sort {} | uniq | wc -l'.format(posi)
+    posi_num = int(getoutput(cmd1))
+    if posi_num > 100000:
+        posi_num = 100000
+    cmd2 = 'sort {} | uniq | shuf 2>/dev/null | head -n {} > {}'.format(posi, posi_num, posi_part)
+    cmd3 = 'sort {} | uniq | shuf 2>/dev/null | head -n {} > {}'.format(nega, posi_num*4, nega_part)
+    os.system(cmd2)
+    os.system(cmd3)
+
+
+def DataMake_1st(script_path, intron_tsv, exon_tsv, posi, nega, posi_part, nega_part):
+    cmd1 = 'python3 {}MakeInit.py {} {} {} {}'.format(script_path, intron_tsv, exon_tsv, posi, nega)
+    os.system(cmd1)
+    SubSampling(posi, nega, posi_part, nega_part)
+    print('  [{}]  DataMake1 Finish.'.format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')), file=sys.stderr)
+
+
+def DataMake_2nd(script_path, pred, genome, intron_tsv, exon_tsv, outfile, out_dir, posi_2_part, nega_2_part):
+    cmd1 = 'python3 {}Validate.py {} {} {} {} > {}'.format(script_path, pred, genome, intron_tsv, exon_tsv, outfile)
+    cmd2 = 'grep "False Positive" {} > {}/model1_FP'.format(outfile, out_dir)
+    cmd3 = 'grep -e "True Positive" -e "False Negative" {} > {}/model1_TP_FN'.format(outfile, out_dir)
+    os.system(cmd1)
+    os.system(cmd2)
+    os.system(cmd3)
+    SubSampling(out_dir+'/model1_TP_FN', out_dir+'/model1_FP', posi_2_part, nega_2_part)
+    print('  [{}]  DataMake2 Finish.'.format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')), file=sys.stderr)
+
+
+def IntronTrain(script_path, genome, posi, nega, model_dir, train_log, gpu, fast):
+    cmd1 = 'python3 {}IntronTrain.py {} {} {} {} {} {} > {}'.format(script_path, genome, posi, nega, model_dir, gpu, fast, train_log)
+    os.system(cmd1)
+    print('  [{}]  IntronTrain Finish.'.format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')), file=sys.stderr)
+
+
+def GenomePred(script_path, genome, model, model_dir, outfile, gpu, fast):
+    if model == None:
+        cmd1 = 'ls {}epoch*_best_model_state.pth'.format(model_dir)
+        model = getoutput(cmd1)
+    cmd2 = 'python3 {}GenomePred.py {} {} {} {} {}'.format(script_path, genome, model, outfile, gpu, fast)
+    os.system(cmd2)
+    print('  [{}]  GenomePred Finish.'.format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')), file=sys.stderr)
+
+
+def TwoModel(script_path, pred_1, pred_2, outfile):
+    cmd = 'python3 {}TwoModel.py {} {} {}'.format(script_path, pred_1, pred_2, outfile)
+    os.system(cmd)
+
+
+def ValidFinal(script_path, infile, genome, intron_tsv, exon_tsv, outfile):
+    cmd = 'python3 {}ValidFinal.py {} {} {} {} | sort -k 1,1 -k 2n,2 > {}'.format(script_path, infile, genome, intron_tsv, exon_tsv, outfile)
+    os.system(cmd)
+    os.remove(infile)
+
+
+def main():
+    ver = version.ver()
+    def_outdir = os.getcwd() + '/Atlass_out_' + datetime.datetime.now().strftime('%Y%m%d')
+    args = GetOptions(def_outdir)
+    if args.version:
+        sys.exit('  {}  '.format(ver))
+    mode = ArgumentsCheck(args)
+    model1 = args.model1
+    model2 = args.model2
+    cpu = args.cpu
+    gpu = args.gpu
+    fast = args.fast
+    if fast:
+        print('  [{}]  AtLASS-{} mode:{} ({}) start.'.format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), ver, mode, 'fast'), file=sys.stderr)
+    else:
+        print('  [{}]  AtLASS-{} mode:{} start.'.format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), ver, mode), file=sys.stderr)
+    
+    script_path = os.path.dirname(os.path.abspath(__file__)) + '/scripts/'
+    genome = args.genome
+    out_dir = args.outdir
+    os.makedirs(out_dir, exist_ok=True)
+    print('  [{}]  Outdir is made at "{}".'.format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), out_dir), file=sys.stderr)
+    
+
+    train_log_1 = out_dir + '/IntronTrain1.log'
+    train_log_2 = out_dir + '/IntronTrain2.log'
+    model1_dir = out_dir + '/model1_dir/'
+    model2_dir = out_dir + '/model2_dir/'
+    pred_1 = out_dir + '/GenomePred_1.tsv'
+    pred_2 = out_dir + '/GenomePred_2.tsv'
+    two_result = out_dir + '/Atlass.tsv'
+
+    if mode == 1:
+        tmp_file = '/tmp/AtLASS_tmp'
+        bam_filtered = out_dir + '/filtered.bam'
+        intron_tsv = out_dir + '/intron.tsv'
+        exon_tsv = out_dir + '/exon.tsv'
+        posi_1 = out_dir + '/posi_1.tsv'
+        nega_1 = out_dir + '/nega_1.tsv'
+        posi_1_part = out_dir + '/posi_1_part.tsv'
+        nega_1_part = out_dir + '/nega_1_part.tsv'
+        pred_1_out = out_dir + '/GenomePred_1_valid.tsv'
+        posi_2 = out_dir + '/posi_2.tsv'
+        nega_2 = out_dir + '/nega_2.tsv'
+        posi_2_part = out_dir + '/posi_2_part.tsv'
+        nega_2_part = out_dir + '/nega_2_part.tsv'
+        os.makedirs(model1_dir, exist_ok=True)
+        os.makedirs(model2_dir, exist_ok=True)
+        bam = args.bam
+        fastq_1 = args.fastq_1
+        fastq_2 = args.fastq_2
+        DataMake_map(script_path=script_path, genome=genome, fastq_1=fastq_1, fastq_2=fastq_2, bam=bam, bam_filtered=bam_filtered, intron_tsv=intron_tsv, exon_tsv=exon_tsv, cpu=cpu)
+        DataMake_1st(script_path=script_path, intron_tsv=intron_tsv, exon_tsv=exon_tsv, posi=posi_1, nega=nega_1, posi_part=posi_1_part, nega_part=nega_1_part)
+        IntronTrain(script_path=script_path, genome=genome, posi=posi_1_part, nega=nega_1_part, model_dir=model1_dir, train_log=train_log_1, gpu=gpu, fast=fast)
+        GenomePred(script_path=script_path, genome=genome, model=model1, model_dir=model1_dir, outfile=pred_1, gpu=gpu, fast=fast)
+        DataMake_2nd(script_path=script_path, pred=pred_1, genome=genome, intron_tsv=intron_tsv, exon_tsv=exon_tsv, outfile=pred_1_out, out_dir=out_dir, posi_2_part=posi_2_part, nega_2_part=nega_2_part)
+        IntronTrain(script_path=script_path, genome=genome, posi=posi_2_part, nega=nega_2_part, model_dir=model2_dir, train_log=train_log_2, gpu=gpu, fast=fast)
+        GenomePred(script_path=script_path, genome=genome, model=model2, model_dir=model2_dir, outfile=pred_2, gpu=gpu, fast=fast)
+        TwoModel(script_path=script_path, pred_1=pred_1, pred_2=pred_2, outfile=tmp_file)
+        ValidFinal(script_path=script_path, infile=tmp_file, genome=genome, intron_tsv=intron_tsv, exon_tsv=exon_tsv, outfile=two_result)
+    elif mode == 2:
+        GenomePred(script_path=script_path, genome=genome, model=model1, model_dir=model1_dir, outfile=pred_1, gpu=gpu, fast=fast)
+        GenomePred(script_path=script_path, genome=genome, model=model2, model_dir=model2_dir, outfile=pred_1, gpu=gpu, fast=fast)
+        TwoModel(script_path=script_path, pred_1=pred_1, pred_2=pred_2, outfile=two_result)
+    elif mode == 3:
+        bam_filtered = out_dir + '/filtered.bam'
+        intron_tsv = out_dir + '/other_intron.tsv'
+        exon_tsv = out_dir + '/other_exon.tsv'
+        posi_1 = out_dir + '/posi_1.tsv'
+        nega_1 = out_dir + '/nega_1.tsv'
+        posi_1_part = out_dir + '/posi_1_part.tsv'
+        nega_1_part = out_dir + '/nega_1_part.tsv'
+        pred_1_out = out_dir + '/GenomePred_1_valid.tsv'
+        posi_2 = out_dir + '/posi_2.tsv'
+        nega_2 = out_dir + '/nega_2.tsv'
+        posi_2_part = out_dir + '/posi_2_part.tsv'
+        nega_2_part = out_dir + '/nega_2_part.tsv'
+        os.makedirs(model1_dir, exist_ok=True)
+        os.makedirs(model2_dir, exist_ok=True)
+        other_genome = args.other_genome
+        other_GenBank = args.other_GenBank
+        other_bam = args.other_bam
+        other_fastq_1 = args.other_fastq_1
+        other_fastq_2 = args.other_fastq_2
+        if other_GenBank!=None and other_bam==None and other_fastq_1==None and other_fastq_2==None:
+            DataMake_gbf(script_path=script_path, genbank=other_GenBank, intron_tsv=intron_tsv, exon_tsv=exon_tsv)
+        elif other_GenBank==None and ((other_bam==None) ^ (other_fastq_1==None and other_fastq_2==None)):
+            DataMake_map(script_path=script_path, genome=other_genome, fastq_1=other_fastq_1, fastq_2=other_fastq_2, bam=other_bam, bam_filtered=bam_filtered, intron_tsv=intron_tsv, exon_tsv=exon_tsv, cpu=cpu)
+        DataMake_1st(script_path=script_path, intron_tsv=intron_tsv, exon_tsv=exon_tsv, posi=posi_1, nega=nega_1, posi_part=posi_1_part, nega_part=nega_1_part)
+        IntronTrain(script_path=script_path, genome=other_genome, posi=posi_1_part, nega=nega_1_part, model_dir=model1_dir, train_log=train_log_1, gpu=gpu, fast=fast)
+        GenomePred(script_path=script_path, genome=genome, model=model1, model_dir=model1_dir, outfile=pred_1, gpu=gpu, fast=fast)
+        DataMake_2nd(script_path=script_path, pred=pred_1, genome=genome, intron_tsv=intron_tsv, exon_tsv=exon_tsv, outfile=pred_1_out, out_dir=out_dir, posi_2_part=posi_2_part, nega_2_part=nega_2_part)
+        IntronTrain(script_path=script_path, genome=other_genome, posi=posi_2_part, nega=nega_2_part, model_dir=model2_dir, train_log=train_log_2, gpu=gpu, fast=fast)
+        GenomePred(script_path=script_path, genome=genome, model=model2, model_dir=model2_dir, outfile=pred_2, gpu=gpu, fast=fast)
+        TwoModel(script_path=script_path, pred_1=pred_1, pred_2=pred_2, outfile=two_result)
+
+    if fast:
+        print('  [{}]  AtLASS-{} mode:{} ({}) Finish.'.format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), ver, mode, 'fast'), file=sys.stderr)
+    else:
+        print('  [{}]  AtLASS-{} mode:{} Finish.'.format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), ver, mode), file=sys.stderr)
+
+main()
