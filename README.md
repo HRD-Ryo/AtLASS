@@ -20,7 +20,7 @@ $ singularity run --nv Atlass.sif -h
 ```
 Use of alias is recommended, for example, by adding the following to your ~/.bashrc.
 ```bash
-alias Atlass='singularity run --nv Atlass.sif -h'
+alias Atlass='singularity run --nv Atlass.sif'
 ```
 ### Select modes
 AtLASS has three modes depending on combination of input files.
