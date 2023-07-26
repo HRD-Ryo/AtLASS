@@ -137,4 +137,5 @@ optional arguments:
 See the [LICENSE](LICENSE) file for details.
 
 ## Publication and Citation
-Comming soon
+If you find this tool useful, please cite [our paper](https://doi.org/10.2197/ipsjtbio.16.20).  
+- Ryo Harada, Keitaro Kume, Kazumasa Horie, Takuro Nakayama, Yuji Inagaki, Toshiyuki Amagasa, AtLASS: A Scheme for End-to-End Prediction of Splice Sites Using Attention-based Bi-LSTM, IPSJ Transactions on Bioinformatics, 2023, Volume 16, Pages 20-27, 10.2197/ipsjtbio.16.20
